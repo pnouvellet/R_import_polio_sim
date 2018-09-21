@@ -1,31 +1,30 @@
 ---
 title: "Estimating R"
 author: "Pierre Nouvellet & Anne Cori"
-date: "`r format(Sys.time(), '%d %B, %Y')`"
-output:
-  word_document:
-  fig_width: 7
-fig_height: 5
-fig_caption: true
-highlight: "tango"
-reference_docx: word_style.docx
+date: "2018-09-21"
 ---
   
 
-```{r}
+```{r, echo = FALSE}
 ### fix the random seed
 set.seed(1)
+library(devtools)
+# install_github('reconhub/branchr')
 library(branchr)
 library(ggplot2)
 library(tidyr)
 library(gridExtra)
+# install.packages('svMisc')
+library(svMisc)
+library(Hmisc)
+
 ```
 
 ---
 # Simulating data
 ---
   
-```{r sim_data, eval = FALSE}
+```{r sim_data, eval = FALSE, echo = FALSE}
 
 
 R=.99
@@ -40,8 +39,12 @@ n_rep_inmp <- length(n_imp)
 
 Res_sim <-list()
 for (n in 1:n_rep_inmp){
-  Res_sim[[paste0('imp_',n_imp[n])]] <- list(true_sizes=matrix(NA,n_imp[n],N_rep),
-                                             obs_sizes=matrix(NA,n_imp[n],N_rep))
+  Res_sim[[paste0('imp_',n_imp[n])]] <- list(true_sizes = matrix(NA,n_imp[n],N_rep),
+                                             obs_sizes = matrix(NA,n_imp[n],N_rep),
+                                             R_simulated = R,
+                                             n_importation = n_imp[n],
+                                             R_estimated = matrix(NA,3,N_rep),
+                                             Imp_estimated = matrix(NA,3,N_rep) )
 }
 
 for (n in 1:n_rep_inmp){
@@ -61,8 +64,8 @@ save.image(file = paste0('sim_polio_R',R,'.RData'))
 
 ```
 
-```{r plot_data}
-
+```{r plot_data, echo = FALSE}
+load('sim_polio_R0.99.RData')
 # layout(matrix(1:2,1,2))
 for (n in 1:n_rep_inmp){
   x <- as.data.frame( Res_sim[[paste0('imp_',n_imp[n])]]$true_sizes)
@@ -84,33 +87,108 @@ for (n in 1:n_rep_inmp){
 # Inference
 
 
-## first infering the reproduction number from observed outbreak final sizes
+## Infering the reproduction number and importations from observed outbreak final sizes
 
-```{r inferR}
+```{r inferR,eval = FALSE, echo = FALSE}
+
 
 # layout(matrix(1:2,1,2))
 for (n in 1:n_rep_inmp){
+  print(n)
   Y_obs <- Res_sim[[paste0('imp_',n_imp[n])]]$obs_sizes
   for (k in 1:N_rep){
+    
     y_obs <- Y_obs[,k]
     y_obs <- y_obs[which(y_obs>0)]
     profile <- profile_likelihood(y_obs = y_obs,
                                   rho = rho,
                                   accuracy = 0.01,
-                                  max_R = 20)
+                                  max_R = 1.5)
     
     R_estimate <- theta_max_likelihood(theta = profile$theta,
                                        likelihood = profile$Likelihood,
                                        threshold_CI = 0.95)
-    as.numeric(R_estimate[c(1,3,4)])
+    
+    Res_sim[[paste0('imp_',n_imp[n])]]$R_estimated[,k] <- as.numeric(R_estimate[c(1,3,4)])
+    
     import <- import(y_obs = y_obs,
                      rho = rho,
                      profile = profile,
                      threshold_z = 1e4,
-                     threshold_import = 5e3,
+                     threshold_import = 1e3,
                      CI = 0.95)
-    length(y_obs) + as.numeric(import[c(1,3,4)])
+    Res_sim[[paste0('imp_',n_imp[n])]]$Imp_estimated[,k] <- length(y_obs) + as.numeric(import[c(1,3,4)])
+    
+    progress(k)
   }
 }
+
+save.image(file = paste0('Res_sim_polio_R',R,'.RData'))
 ```
 
+# check results
+
+```{r, echo = FALSE}
+load(file = paste0('Res_sim_polio_R',R,'.RData'))
+summary <- list(sim_R = rep(NA,n_rep_inmp),
+                      sim_imp = rep(NA,n_rep_inmp),
+                      est_R = matrix(NA,3,n_rep_inmp),
+                      est_imp = matrix(NA,3,n_rep_inmp),
+                      est_R_within = rep(NA,n_rep_inmp),
+                      est_imp_within = rep(NA,n_rep_inmp),
+                      est_R_bias = matrix(NA,3,n_rep_inmp),
+                      est_imp_bias = matrix(NA,3,n_rep_inmp))
+                      
+layout(matrix(1:2,1,2))
+for (n in 1:n_rep_inmp){
+  x <- Res_sim[[paste0('imp_',n_imp[n])]]$R_estimated[1,] 
+  y <- Res_sim[[paste0('imp_',n_imp[n])]]$Imp_estimated[1,] 
+  
+  summary$sim_R[n] <- Res_sim[[paste0('imp_',n_imp[n])]]$R_simulated
+  summary$sim_imp[n] <- Res_sim[[paste0('imp_',n_imp[n])]]$n_importation
+  
+  summary$est_R[,n] <- quantile(x,c(0.5,.025,.975))
+  summary$est_imp[,n] <- quantile(y,c(0.5,.025,.975))
+  
+  summary$est_R_bias[,n] <- quantile( summary$sim_R[n] - x ,c(0.5,.025,.975))
+  summary$est_imp_bias[,n] <- quantile( summary$sim_imp[n] - y ,c(0.5,.025,.975))
+
+  temp <- length(which(Res_sim[[paste0('imp_',n_imp[n])]]$R_estimated[2,] <= summary$sim_R[n] & 
+          Res_sim[[paste0('imp_',n_imp[n])]]$R_estimated[3,] >= summary$sim_R[n])) / N_rep
+  
+  summary$est_R_within[n] <- temp
+  
+  temp <- length(which(Res_sim[[paste0('imp_',n_imp[n])]]$Imp_estimated[2,] <= summary$sim_imp[n] & 
+          Res_sim[[paste0('imp_',n_imp[n])]]$Imp_estimated[3,] >= summary$sim_imp[n])) / N_rep
+  
+  summary$est_imp_within[n] <- temp
+  
+}
+
+
+```
+
+```{r, echo = FALSE}
+layout( matrix(1:2,1,2, byrow = TRUE))
+errbar(1:n_rep_inmp,summary$est_R[1,],summary$est_R[2,],summary$est_R[3,], ylim = c(.5,1.1),ylab = 'R')
+lines(1:n_rep_inmp,summary$sim_R, type = 'p', pch=4, col = 'red', cex =1, lwd = 2)
+
+errbar(1:n_rep_inmp,summary$est_imp[1,],summary$est_imp[2,],summary$est_imp[3,], ylim = c(0,1e3), ylab = 'Importations')
+lines(1:n_rep_inmp,summary$sim_imp, type = 'p', pch=4, col = 'red', cex =1, lwd = 2)
+
+print('#################################################################################')
+print(paste0('### percentage of R estimates with 95%CI within true value: ' ,summary$est_R_within))
+print('#################################################################################')
+print(paste0('### percentage of importations estimates with 95%CI within true value: ' ,summary$est_imp_within))
+```
+
+```{r, echo = FALSE}
+layout( matrix(1:2,1,2, byrow = TRUE))
+errbar(1:n_rep_inmp,summary$est_R_bias[1,],summary$est_R_bias[2,],summary$est_R_bias[3,], ylim = c(-0.1,0.1),ylab = 'R bias')
+lines(1:n_rep_inmp,c(0,0), type = 'l', col = 'red', lwd = 2)
+
+errbar(1:n_rep_inmp,summary$est_imp_bias[1,],summary$est_imp_bias[2,],summary$est_imp_bias[3,], ylim =  c(-300,300), ylab = 'Importations bias')
+lines(1:n_rep_inmp,c(0,0), type = 'l', col = 'red', lwd = 2)
+
+
+```
